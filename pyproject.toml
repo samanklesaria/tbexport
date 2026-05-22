@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[project]
+name = "tbexport"
+version = "0.1.0"
+description = "Export TensorBoard summaries (scalars, images, audio) to static HTML files"
+requires-python = ">=3.8"
+dependencies = [
+    "tensorboard",
+    "matplotlib",
+    "fire",
+]
+
+[project.scripts]
+tbexport = "tbexport:main"
