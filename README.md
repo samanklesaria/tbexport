@@ -1,4 +1,4 @@
-# tbexport
+# ![](logo.png)
 
 tbexport extracts scalars, images, and audio from TensorBoard log directories and writes them out as static HTML files with accompanying assets. Scalar tags are rendered as plot images, and image/audio tags get interactive step scrubbers.
 
