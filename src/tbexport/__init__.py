@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import json
+import base64
+from io import BytesIO
 from html import escape
 from typing import Optional, TypedDict
 import fire
@@ -68,6 +70,86 @@ SCRUBBER_JS = """\
     }
 })();
 """
+
+
+EMBED_SCRUBBER_JS = """\
+(function() {
+    function init() {
+        document.querySelectorAll('[data-assets-var]').forEach(function(el) {
+            if (el.dataset.initialized) return;
+            el.dataset.initialized = '1';
+            var assets = window[el.dataset.assetsVar];
+            var steps = JSON.parse(el.dataset.steps);
+            var slider = el.querySelector('.step-slider');
+            var display = el.querySelector('.step-display');
+            var player = el.querySelector('audio');
+            var img = el.querySelector('img');
+            if (player) { player.src = assets[steps[0]]; player.load(); }
+            if (img) { img.src = assets[steps[0]]; }
+            slider.addEventListener('input', function(e) {
+                var step = steps[parseInt(e.target.value)];
+                display.textContent = step;
+                if (player) {
+                    var wasPlaying = !player.paused;
+                    player.src = assets[step];
+                    player.load();
+                    if (wasPlaying) player.play();
+                }
+                if (img) { img.src = assets[step]; }
+            });
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+"""
+
+
+def _next_embed_id(_counter=[0]):
+    _counter[0] += 1
+    return f"_tb{_counter[0]}"
+
+
+def _embed_script(var_name, assets):
+    return f'<script>var {var_name}={json.dumps(assets)};</script>'
+
+
+def _audio_scrubber_embed(steps, assets):
+    var_name = _next_embed_id()
+    return (
+        _embed_script(var_name, assets)
+        + f'<div class="scrubber-control"'
+        f' data-assets-var="{var_name}"'
+        f' data-steps="{escape(json.dumps(steps))}">'
+        f'<div class="scrubber-label">'
+        f'<span>Step Scrubber</span>'
+        f'<span><strong class="step-display">{steps[0]}</strong></span>'
+        f'</div>'
+        f'<input type="range" class="step-slider" min="0" max="{len(steps)-1}" value="0" step="1" />'
+        f'<audio controls src="" type="audio/wav"></audio>'
+        f'</div>'
+    )
+
+
+def _image_scrubber_embed(tag, steps, assets):
+    var_name = _next_embed_id()
+    return (
+        _embed_script(var_name, assets)
+        + f'<div data-assets-var="{var_name}"'
+        f' data-steps="{escape(json.dumps(steps))}">'
+        f'<div class="scrubber-control">'
+        f'<div class="scrubber-label">'
+        f'<span>Step Scrubber</span>'
+        f'<span><strong class="step-display">{steps[0]}</strong></span>'
+        f'</div>'
+        f'<input type="range" class="step-slider" min="0" max="{len(steps)-1}" value="0" step="1" />'
+        f'</div>'
+        f'<img src="" alt="{tag}" />'
+        f'</div>'
+    )
 
 
 class StepEntry(TypedDict):
@@ -156,39 +238,52 @@ def _image_scrubber(tag: str, steps_data: list[StepEntry]) -> str:
     )
 
 
-def _audio_html(tag: str, path_template: str, steps: list[int]) -> str:
+def _audio_html(tag: str, path_template: str, steps: list[int],
+                embed_assets: Optional[dict[int, str]] = None) -> str:
     if len(steps) == 1:
-        src = path_template.replace('{step}', str(steps[0]))
+        src = embed_assets[steps[0]] if embed_assets else path_template.replace('{step}', str(steps[0]))
         header = _compact_header(tag, f"step {steps[0]}")
         body = f'<audio controls><source src="{src}" type="audio/wav"></audio>'
     else:
         header = _compact_header(tag, f"Contains {len(steps)} steps")
-        body = _audio_scrubber(path_template, steps)
+        body = _audio_scrubber_embed(steps, embed_assets) if embed_assets else _audio_scrubber(path_template, steps)
     return f'<div class="item-container">{header}{body}</div>\n'
 
 
-def _audio_cell(tag: str, path_template: str, steps: list[int]) -> str:
+def _audio_cell(tag: str, path_template: str, steps: list[int],
+                embed_assets: Optional[dict[int, str]] = None) -> str:
     sublabel = tag.split('/')[-1]
     if len(steps) == 1:
-        src = path_template.replace('{step}', str(steps[0]))
+        src = embed_assets[steps[0]] if embed_assets else path_template.replace('{step}', str(steps[0]))
         return (_compact_header(sublabel, f"step {steps[0]}") +
                 f'<audio controls><source src="{src}" type="audio/wav"></audio>')
+    if embed_assets:
+        return _compact_header(sublabel, '') + _audio_scrubber_embed(steps, embed_assets)
     return _compact_header(sublabel, '') + _audio_scrubber(path_template, steps)
 
 
-def _image_html(tag: str, steps_data: list[StepEntry]) -> str:
+def _image_html(tag: str, steps_data: list[StepEntry], embed: bool = False) -> str:
     if len(steps_data) == 1:
         ev = steps_data[0]
         return _item(f"Image Summary: {tag}", f"step {ev['step']}",
                      f'<img src="{ev["src"]}" alt="{tag}" />')
+    if embed:
+        assets = {sd["step"]: sd["src"] for sd in steps_data}
+        steps = [sd["step"] for sd in steps_data]
+        return _item(f"Image Summary: {tag}", f"Contains {len(steps_data)} steps",
+                     _image_scrubber_embed(tag, steps, assets))
     return _item(f"Image Summary: {tag}", f"Contains {len(steps_data)} steps",
                  _image_scrubber(tag, steps_data))
 
 
-def _image_cell(tag: str, steps_data: list[StepEntry]) -> str:
+def _image_cell(tag: str, steps_data: list[StepEntry], embed: bool = False) -> str:
     if len(steps_data) == 1:
         ev = steps_data[0]
         return _sublabel(tag) + f'<img src="{ev["src"]}" alt="{tag}" />'
+    if embed:
+        assets = {sd["step"]: sd["src"] for sd in steps_data}
+        steps = [sd["step"] for sd in steps_data]
+        return _sublabel(tag) + _image_scrubber_embed(tag, steps, assets)
     return _sublabel(tag) + _image_scrubber(tag, steps_data)
 
 
@@ -197,6 +292,7 @@ def extract(
     scalars: Optional[str | list[str]] = None,
     images: Optional[str | list[str]] = None,
     audio: Optional[str | list[str]] = None,
+    embed: bool = False,
 ) -> Optional[str]:
     """Parses a TensorBoard log directory and extracts requested tags into static HTML.
 
@@ -205,6 +301,8 @@ def extract(
         scalars: Tag name or list of scalar tags to plot.
         images: Tag name or list of image tags to extract.
         audio: Tag name or list of audio tags to extract.
+        embed: If True, base64-encode assets directly in the HTML instead of
+            creating an assets directory.
     """
     if not os.path.exists(log_dir):
         return f"Error: The log directory '{log_dir}' does not exist."
@@ -228,8 +326,9 @@ def extract(
     ea.Reload()
     tags = ea.Tags()
 
-    with open("scrubber.js", "w", encoding="utf-8") as f:
-        f.write(SCRUBBER_JS)
+    if not embed:
+        with open("scrubber.js", "w", encoding="utf-8") as f:
+            f.write(SCRUBBER_JS)
 
     scalar_groups = _expand_groups(target_scalars, tags['scalars'])
     image_groups = _expand_groups(target_images, tags['images'])
@@ -250,8 +349,9 @@ def extract(
     for label in all_labels:
         slug = label.replace('/', '_')
         output = slug + '.html'
-        assets_dirname = slug + '_assets'
-        os.makedirs(assets_dirname, exist_ok=True)
+        if not embed:
+            assets_dirname = slug + '_assets'
+            os.makedirs(assets_dirname, exist_ok=True)
 
         sections: list[str] = []
 
@@ -272,11 +372,19 @@ def extract(
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.tight_layout()
 
-            filename = f"scalar_{tag.replace('/', '_')}.png"
-            plt.savefig(os.path.join(assets_dirname, filename))
-            plt.close()
+            if embed:
+                buf = BytesIO()
+                plt.savefig(buf, format='png')
+                plt.close()
+                buf.seek(0)
+                src = 'data:image/png;base64,' + base64.b64encode(buf.read()).decode()
+            else:
+                filename = f"scalar_{tag.replace('/', '_')}.png"
+                plt.savefig(os.path.join(assets_dirname, filename))
+                plt.close()
+                src = f"{assets_dirname}/{filename}"
 
-            cells.append((tag, f"{assets_dirname}/{filename}", values[-1], steps[-1]))
+            cells.append((tag, src, values[-1], steps[-1]))
 
         if cells:
             if len(cells) == 1:
@@ -300,48 +408,68 @@ def extract(
                 continue
             steps_data: list[StepEntry] = []
             for event in ea.Images(tag):
-                filename = f"image_{tag.replace('/', '_')}_step{event.step}.png"
-                with open(os.path.join(assets_dirname, filename), "wb") as f:
-                    f.write(event.encoded_image_string)
-                steps_data.append({"step": event.step, "src": f"{assets_dirname}/{filename}"})
+                if embed:
+                    src = 'data:image/png;base64,' + base64.b64encode(event.encoded_image_string).decode()
+                else:
+                    filename = f"image_{tag.replace('/', '_')}_step{event.step}.png"
+                    with open(os.path.join(assets_dirname, filename), "wb") as f:
+                        f.write(event.encoded_image_string)
+                    src = f"{assets_dirname}/{filename}"
+                steps_data.append({"step": event.step, "src": src})
             image_cells.append((tag, steps_data))
 
         if image_cells:
             if len(image_cells) == 1:
                 tag, steps_data = image_cells[0]
-                sections.append(_image_html(tag, steps_data))
+                sections.append(_image_html(tag, steps_data, embed=embed))
             else:
                 sections.append(_table(label, "Image",
-                                       [_image_cell(tag, sd) for tag, sd in image_cells]))
+                                       [_image_cell(tag, sd, embed=embed) for tag, sd in image_cells]))
 
         group = audio_map.get(label, [])
-        audio_cells: list[tuple[str, str, list[int]]] = []
+        audio_cells_list: list[tuple[str, str, list[int], Optional[dict[int, str]]]] = []
         for tag in group:
             if tag not in tags['audio']:
                 print(f"Warning: Audio tag '{tag}' not found.")
                 continue
-            slug = tag.replace('/', '_')
-            path_template = f"{assets_dirname}/audio_{slug}_step{{step}}.wav"
+            tag_slug = tag.replace('/', '_')
             steps: list[int] = []
-            for event in ea.Audio(tag):
-                filename = f"audio_{slug}_step{event.step}.wav"
-                with open(os.path.join(assets_dirname, filename), "wb") as f:
-                    f.write(event.encoded_audio_string)
-                steps.append(event.step)
-            audio_cells.append((tag, path_template, steps))
+            embed_assets: Optional[dict[int, str]] = None
+            if embed:
+                embed_assets = {}
+                for event in ea.Audio(tag):
+                    embed_assets[event.step] = 'data:audio/wav;base64,' + base64.b64encode(event.encoded_audio_string).decode()
+                    steps.append(event.step)
+                path_template = ''
+            else:
+                path_template = f"{assets_dirname}/audio_{tag_slug}_step{{step}}.wav"
+                for event in ea.Audio(tag):
+                    filename = f"audio_{tag_slug}_step{event.step}.wav"
+                    with open(os.path.join(assets_dirname, filename), "wb") as f:
+                        f.write(event.encoded_audio_string)
+                    steps.append(event.step)
+            audio_cells_list.append((tag, path_template, steps, embed_assets))
 
-        if audio_cells:
-            if len(audio_cells) == 1:
-                tag, path_template, steps = audio_cells[0]
-                sections.append(_audio_html(tag, path_template, steps))
+        if audio_cells_list:
+            if len(audio_cells_list) == 1:
+                tag, path_template, steps, embed_assets = audio_cells_list[0]
+                sections.append(_audio_html(tag, path_template, steps, embed_assets=embed_assets))
             else:
                 sections.append(_table(label, "Audio",
-                                       [_audio_cell(tag, pt, st) for tag, pt, st in audio_cells]))
+                                       [_audio_cell(t, pt, st, embed_assets=emb)
+                                        for t, pt, st, emb in audio_cells_list]))
+
+        preamble = STYLES
+        if embed:
+            preamble += f'<script>\n{EMBED_SCRUBBER_JS}</script>\n'
 
         with open(output, "w", encoding="utf-8") as f:
-            f.write(STYLES + "".join(sections))
+            f.write(preamble + "".join(sections))
 
-        print(f"  {output}  (assets: {assets_dirname}/)")
+        if embed:
+            print(f"  {output}  (self-contained)")
+        else:
+            print(f"  {output}  (assets: {assets_dirname}/)")
 
     return None
 
