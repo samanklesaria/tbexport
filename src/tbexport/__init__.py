@@ -267,7 +267,6 @@ def extract(
 
             plt.figure(figsize=(7, 4), dpi=150)
             plt.plot(steps, values, color='#1a73e8', linewidth=2)
-            plt.title(f"Metric: {tag}", fontsize=12, fontweight='bold', pad=10)
             plt.xlabel("Step", fontsize=10)
             plt.ylabel("Value", fontsize=10)
             plt.grid(True, linestyle='--', alpha=0.6)
